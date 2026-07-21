@@ -242,6 +242,116 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     }
 }
 
+final class CountdownOverlay {
+    private var panel: NSPanel?
+    private var timer: Timer?
+    private var monitor: Any?
+    private var startTime: Date?
+    private var duration: TimeInterval = 0
+    private var onComplete: (() -> Void)?
+    private var onCancel: (() -> Void)?
+    private var titleLabel: NSTextField?
+    private var track: NSView?
+    private var fill: NSView?
+
+    func show(duration: TimeInterval, onComplete: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        dismiss()
+        self.duration = duration
+        self.onComplete = onComplete
+        self.onCancel = onCancel
+        self.startTime = Date()
+
+        let width: CGFloat = 360, height: CGFloat = 120
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor(white: 0.0, alpha: 0.82).cgColor
+        content.layer?.cornerRadius = 16
+        panel.contentView = content
+
+        let title = NSTextField(labelWithString: "Submitting in \(Int(ceil(duration)))s")
+        title.font = .systemFont(ofSize: 18, weight: .semibold)
+        title.textColor = .white
+        title.alignment = .center
+        title.frame = NSRect(x: 0, y: height - 46, width: width, height: 24)
+        content.addSubview(title)
+
+        let barMargin: CGFloat = 30
+        let barWidth = width - barMargin * 2
+        let trackView = NSView(frame: NSRect(x: barMargin, y: 52, width: barWidth, height: 14))
+        trackView.wantsLayer = true
+        trackView.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.18).cgColor
+        trackView.layer?.cornerRadius = 7
+        content.addSubview(trackView)
+
+        let fillView = NSView(frame: NSRect(x: 0, y: 0, width: barWidth, height: 14))
+        fillView.wantsLayer = true
+        fillView.layer?.backgroundColor = NSColor.white.cgColor
+        fillView.layer?.cornerRadius = 7
+        trackView.addSubview(fillView)
+
+        let hint = NSTextField(labelWithString: "press Esc to cancel")
+        hint.font = .systemFont(ofSize: 12)
+        hint.textColor = NSColor(white: 1.0, alpha: 0.6)
+        hint.alignment = .center
+        hint.frame = NSRect(x: 0, y: 20, width: width, height: 16)
+        content.addSubview(hint)
+
+        if let screen = NSScreen.main {
+            let f = screen.frame
+            panel.setFrameOrigin(NSPoint(x: f.midX - width / 2, y: f.midY - height / 2))
+        }
+
+        self.panel = panel
+        self.titleLabel = title
+        self.track = trackView
+        self.fill = fillView
+        panel.orderFrontRegardless()
+
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { self?.cancel() }
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+    }
+
+    private func tick() {
+        guard let startTime, duration > 0 else { return }
+        let remaining = max(0, duration - Date().timeIntervalSince(startTime))
+        let fraction = CGFloat(max(0, min(1, remaining / duration)))
+        if let track, let fill { fill.frame.size.width = track.bounds.width * fraction }
+        titleLabel?.stringValue = "Submitting in \(Int(ceil(remaining)))s"
+        if remaining <= 0 { complete() }
+    }
+
+    private func complete() { let cb = onComplete; teardown(); cb?() }
+    private func cancel() { let cb = onCancel; teardown(); cb?() }
+    func dismiss() { teardown() }
+
+    private func teardown() {
+        timer?.invalidate(); timer = nil
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        panel?.orderOut(nil); panel = nil
+        startTime = nil; onComplete = nil; onCancel = nil
+        titleLabel = nil; track = nil; fill = nil
+    }
+}
+
 let controller = WhisperController()
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
