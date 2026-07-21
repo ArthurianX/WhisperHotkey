@@ -13,6 +13,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
     private var recordingStartTime: Date?
     private var transcribing = false
+    private let overlay = CountdownOverlay()
 
     private var whisperBin: URL {
         whisperRoot.appendingPathComponent("build/bin/whisper-cli")
@@ -39,6 +40,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     }
 
     func keyDown() {
+        overlay.dismiss()
         if transcribing {
             notify(title: "Whisper", body: "Already transcribing.")
             return
@@ -180,6 +182,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
                 if self.pasteIntoFocusedField() {
                     self.notify(title: "Whisper", body: "Transcript pasted.")
                     self.log("Transcript copied to clipboard and auto-pasted.")
+                    self.startCountdown(for: cleaned)
                 } else {
                     self.notify(title: "Whisper", body: "Transcript copied to clipboard. Enable Accessibility permission to auto-paste.")
                     self.log("Transcript copied to clipboard; auto-paste skipped (Accessibility permission not granted).")
@@ -201,6 +204,35 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
         keyDownEvent?.post(tap: .cgSessionEventTap)
         keyUpEvent?.post(tap: .cgSessionEventTap)
         return true
+    }
+
+    private func countdownDuration(for text: String) -> TimeInterval {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+        switch words {
+        case ...8: return 3
+        case 9...25: return 4
+        default: return 5
+        }
+    }
+
+    private func startCountdown(for text: String) {
+        guard !text.isEmpty else { return }
+        overlay.show(duration: countdownDuration(for: text), onComplete: { [weak self] in
+            self?.sendReturnKey()
+            self?.log("Auto-submitted transcript.")
+        }, onCancel: { [weak self] in
+            self?.log("Auto-submit cancelled by user.")
+        })
+    }
+
+    private func sendReturnKey() {
+        guard AXIsProcessTrusted() else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        let vKeyCode: CGKeyCode = 36
+        let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
+        down?.post(tap: .cgSessionEventTap)
+        up?.post(tap: .cgSessionEventTap)
     }
 
     private func openLogHandle() -> FileHandle? {
