@@ -308,15 +308,25 @@ final class CountdownOverlay {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
+        let cornerRadius: CGFloat = 20
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         content.wantsLayer = true
-        content.layer?.backgroundColor = NSColor(white: 0.0, alpha: 0.82).cgColor
-        content.layer?.cornerRadius = 16
-        panel.contentView = content
+
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+            glass.style = .regular
+            glass.cornerRadius = cornerRadius
+            glass.contentView = content
+            panel.contentView = glass
+        } else {
+            content.layer?.backgroundColor = NSColor(white: 0.0, alpha: 0.82).cgColor
+            content.layer?.cornerRadius = cornerRadius
+            panel.contentView = content
+        }
 
         let title = NSTextField(labelWithString: "Submitting in \(Int(ceil(duration)))s")
         title.font = .systemFont(ofSize: 18, weight: .semibold)
-        title.textColor = .white
+        title.textColor = .labelColor
         title.alignment = .center
         title.frame = NSRect(x: 0, y: height - 46, width: width, height: 24)
         content.addSubview(title)
@@ -325,19 +335,19 @@ final class CountdownOverlay {
         let barWidth = width - barMargin * 2
         let trackView = NSView(frame: NSRect(x: barMargin, y: 52, width: barWidth, height: 14))
         trackView.wantsLayer = true
-        trackView.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.18).cgColor
+        trackView.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
         trackView.layer?.cornerRadius = 7
         content.addSubview(trackView)
 
         let fillView = NSView(frame: NSRect(x: 0, y: 0, width: barWidth, height: 14))
         fillView.wantsLayer = true
-        fillView.layer?.backgroundColor = NSColor.white.cgColor
+        fillView.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         fillView.layer?.cornerRadius = 7
         trackView.addSubview(fillView)
 
         let hint = NSTextField(labelWithString: "press Esc to cancel")
         hint.font = .systemFont(ofSize: 12)
-        hint.textColor = NSColor(white: 1.0, alpha: 0.6)
+        hint.textColor = .secondaryLabelColor
         hint.alignment = .center
         hint.frame = NSRect(x: 0, y: 20, width: width, height: 16)
         content.addSubview(hint)
