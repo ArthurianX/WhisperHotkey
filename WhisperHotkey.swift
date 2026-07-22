@@ -5,6 +5,116 @@ import Carbon
 import CoreGraphics
 import Foundation
 
+extension NSColor {
+    convenience init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6 || s.count == 8, let val = UInt64(s, radix: 16) else { return nil }
+        let r, g, b, a: CGFloat
+        if s.count == 8 {
+            r = CGFloat((val >> 24) & 0xFF) / 255
+            g = CGFloat((val >> 16) & 0xFF) / 255
+            b = CGFloat((val >> 8) & 0xFF) / 255
+            a = CGFloat(val & 0xFF) / 255
+        } else {
+            r = CGFloat((val >> 16) & 0xFF) / 255
+            g = CGFloat((val >> 8) & 0xFF) / 255
+            b = CGFloat(val & 0xFF) / 255
+            a = 1
+        }
+        self.init(srgbRed: r, green: g, blue: b, alpha: a)
+    }
+}
+
+/// User-editable settings for the countdown overlay, loaded from `config.json`.
+/// Any missing or malformed key falls back to the default value below.
+struct OverlayConfig {
+    // countdown durations (seconds) by transcript word count
+    var shortWordMax = 8
+    var mediumWordMax = 25
+    var shortSeconds: TimeInterval = 3
+    var mediumSeconds: TimeInterval = 4
+    var longSeconds: TimeInterval = 5
+    // on-screen text ({seconds} is replaced with the remaining whole seconds)
+    var titleFormat = "Submitting in {seconds}s"
+    var cancelHint = "press Esc to cancel"
+    // Liquid Glass appearance
+    var glassStyle = "regular"        // "regular" or "clear"
+    var cornerRadius: CGFloat = 20
+    var width: CGFloat = 360
+    var height: CGFloat = 120
+    var tintColorHex: String? = nil   // e.g. "#3478F6"; null = no tint
+    var fillColorHex: String? = nil   // progress bar fill; null = system accent
+
+    static let path = URL(fileURLWithPath: "/Users/arthur/whisper-hotkey/config.json")
+
+    func duration(forWordCount words: Int) -> TimeInterval {
+        if words <= shortWordMax { return shortSeconds }
+        if words <= mediumWordMax { return mediumSeconds }
+        return longSeconds
+    }
+
+    func title(seconds: Int) -> String {
+        titleFormat.replacingOccurrences(of: "{seconds}", with: "\(seconds)")
+    }
+
+    static func load() -> OverlayConfig {
+        var config = OverlayConfig()
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return config
+        }
+        if let c = json["countdown"] as? [String: Any] {
+            if let v = c["shortWordMax"] as? Int { config.shortWordMax = v }
+            if let v = c["mediumWordMax"] as? Int { config.mediumWordMax = v }
+            if let v = c["shortSeconds"] as? Double { config.shortSeconds = v }
+            if let v = c["mediumSeconds"] as? Double { config.mediumSeconds = v }
+            if let v = c["longSeconds"] as? Double { config.longSeconds = v }
+        }
+        if let m = json["messages"] as? [String: Any] {
+            if let v = m["titleFormat"] as? String { config.titleFormat = v }
+            if let v = m["cancelHint"] as? String { config.cancelHint = v }
+        }
+        if let g = json["glass"] as? [String: Any] {
+            if let v = g["style"] as? String { config.glassStyle = v }
+            if let v = g["cornerRadius"] as? Double { config.cornerRadius = CGFloat(v) }
+            if let v = g["width"] as? Double { config.width = CGFloat(v) }
+            if let v = g["height"] as? Double { config.height = CGFloat(v) }
+            config.tintColorHex = g["tintColorHex"] as? String
+            config.fillColorHex = g["fillColorHex"] as? String
+        }
+        return config
+    }
+
+    static func writeDefaultIfMissing() {
+        guard !FileManager.default.fileExists(atPath: path.path) else { return }
+        let defaults = """
+        {
+          "countdown": {
+            "shortWordMax": 8,
+            "mediumWordMax": 25,
+            "shortSeconds": 3,
+            "mediumSeconds": 4,
+            "longSeconds": 5
+          },
+          "messages": {
+            "titleFormat": "Submitting in {seconds}s",
+            "cancelHint": "press Esc to cancel"
+          },
+          "glass": {
+            "style": "regular",
+            "cornerRadius": 20,
+            "width": 360,
+            "height": 120,
+            "tintColorHex": null,
+            "fillColorHex": null
+          }
+        }
+        """
+        try? defaults.write(to: path, atomically: true, encoding: .utf8)
+    }
+}
+
 final class WhisperController: NSObject, AVAudioRecorderDelegate {
     private static let minimumHoldDuration: TimeInterval = 0.3
 
@@ -206,18 +316,11 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
         return true
     }
 
-    private func countdownDuration(for text: String) -> TimeInterval {
-        let words = text.split(whereSeparator: { $0.isWhitespace }).count
-        switch words {
-        case ...8: return 3
-        case 9...25: return 4
-        default: return 5
-        }
-    }
-
     private func startCountdown(for text: String) {
         guard !text.isEmpty else { return }
-        overlay.show(duration: countdownDuration(for: text), onComplete: { [weak self] in
+        let config = OverlayConfig.load()
+        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+        overlay.show(duration: config.duration(forWordCount: words), config: config, onComplete: { [weak self] in
             self?.sendReturnKey()
             self?.log("Auto-submitted transcript.")
         }, onCancel: { [weak self] in
@@ -285,15 +388,17 @@ final class CountdownOverlay {
     private var titleLabel: NSTextField?
     private var track: NSView?
     private var fill: NSView?
+    private var config = OverlayConfig()
 
-    func show(duration: TimeInterval, onComplete: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    func show(duration: TimeInterval, config: OverlayConfig, onComplete: @escaping () -> Void, onCancel: @escaping () -> Void) {
         dismiss()
+        self.config = config
         self.duration = duration
         self.onComplete = onComplete
         self.onCancel = onCancel
         self.startTime = Date()
 
-        let width: CGFloat = 360, height: CGFloat = 120
+        let width = config.width, height = config.height
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -308,14 +413,15 @@ final class CountdownOverlay {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
-        let cornerRadius: CGFloat = 20
+        let cornerRadius = config.cornerRadius
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         content.wantsLayer = true
 
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            glass.style = .regular
+            glass.style = config.glassStyle.lowercased() == "clear" ? .clear : .regular
             glass.cornerRadius = cornerRadius
+            if let hex = config.tintColorHex, let tint = NSColor(hex: hex) { glass.tintColor = tint }
             glass.contentView = content
             panel.contentView = glass
         } else {
@@ -324,7 +430,7 @@ final class CountdownOverlay {
             panel.contentView = content
         }
 
-        let title = NSTextField(labelWithString: "Submitting in \(Int(ceil(duration)))s")
+        let title = NSTextField(labelWithString: config.title(seconds: Int(ceil(duration))))
         title.font = .systemFont(ofSize: 18, weight: .semibold)
         title.textColor = .labelColor
         title.alignment = .center
@@ -341,11 +447,12 @@ final class CountdownOverlay {
 
         let fillView = NSView(frame: NSRect(x: 0, y: 0, width: barWidth, height: 14))
         fillView.wantsLayer = true
-        fillView.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        let fillColor = config.fillColorHex.flatMap { NSColor(hex: $0) } ?? .controlAccentColor
+        fillView.layer?.backgroundColor = fillColor.cgColor
         fillView.layer?.cornerRadius = 7
         trackView.addSubview(fillView)
 
-        let hint = NSTextField(labelWithString: "press Esc to cancel")
+        let hint = NSTextField(labelWithString: config.cancelHint)
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
         hint.alignment = .center
@@ -376,7 +483,7 @@ final class CountdownOverlay {
         let remaining = max(0, duration - Date().timeIntervalSince(startTime))
         let fraction = CGFloat(max(0, min(1, remaining / duration)))
         if let track, let fill { fill.frame.size.width = track.bounds.width * fraction }
-        titleLabel?.stringValue = "Submitting in \(Int(ceil(remaining)))s"
+        titleLabel?.stringValue = config.title(seconds: Int(ceil(remaining)))
         if remaining <= 0 { complete() }
     }
 
@@ -394,6 +501,7 @@ final class CountdownOverlay {
     }
 }
 
+OverlayConfig.writeDefaultIfMissing()
 let controller = WhisperController()
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
