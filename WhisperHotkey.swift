@@ -398,7 +398,9 @@ final class CountdownOverlay {
         self.onCancel = onCancel
         self.startTime = Date()
 
-        let width = config.width, height = config.height
+        // Clamp to minimums so a small config value can't collapse the overlay out of view.
+        let width = max(config.width, 220)
+        let height = max(config.height, 110)
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -434,12 +436,12 @@ final class CountdownOverlay {
         title.font = .systemFont(ofSize: 18, weight: .semibold)
         title.textColor = .labelColor
         title.alignment = .center
-        title.frame = NSRect(x: 0, y: height - 46, width: width, height: 24)
+        title.frame = NSRect(x: 0, y: height - 40, width: width, height: 24)
         content.addSubview(title)
 
         let barMargin: CGFloat = 30
         let barWidth = width - barMargin * 2
-        let trackView = NSView(frame: NSRect(x: barMargin, y: 52, width: barWidth, height: 14))
+        let trackView = NSView(frame: NSRect(x: barMargin, y: (height - 14) / 2, width: barWidth, height: 14))
         trackView.wantsLayer = true
         trackView.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
         trackView.layer?.cornerRadius = 7
@@ -456,7 +458,7 @@ final class CountdownOverlay {
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
         hint.alignment = .center
-        hint.frame = NSRect(x: 0, y: 20, width: width, height: 16)
+        hint.frame = NSRect(x: 0, y: 18, width: width, height: 16)
         content.addSubview(hint)
 
         if let screen = NSScreen.main {
