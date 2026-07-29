@@ -45,6 +45,16 @@ expect(defaults.serverPort == 8642, "default server.port 8642")
 expect(defaults.submitChord(forBundleID: "anything") == .enter, "default submit is enter")
 expect(defaults.title(seconds: 5) == "Submitting in 5s", "default titleFormat has no {key}")
 
+// --- OverlayConfig.pinnedLanguages ---
+let tmpPinnedConfig = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whisper-test-pinned-config.json")
+try! """
+{ "pinnedLanguages": ["ro", "en"] }
+""".write(to: tmpPinnedConfig, atomically: true, encoding: .utf8)
+
+let pinnedCfg = OverlayConfig.load(from: tmpPinnedConfig)
+expect(pinnedCfg.pinnedLanguages == ["ro", "en"], "pinnedLanguages parsed from config")
+expect(defaults.pinnedLanguages == [], "default pinnedLanguages is empty (pinning disabled)")
+
 // --- pickPinnedLanguage ---
 expect(pickPinnedLanguage(probabilities: ["ro": 0.9, "en": 0.05, "ru": 0.9], pinned: []) == nil, "empty pinned list disables pinning")
 expect(pickPinnedLanguage(probabilities: ["ro": 0.9, "en": 0.05], pinned: ["ro"]) == nil, "single-entry pinned list disables pinning")

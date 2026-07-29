@@ -45,6 +45,8 @@ struct OverlayConfig {
     var serverPort = 8642
     // bundle-id → chord string; "default" applies to unmapped apps
     var submitKeys: [String: String] = ["default": "enter"]
+    // language codes (e.g. "ro", "en") to restrict auto-detect to; empty/single-entry = disabled
+    var pinnedLanguages: [String] = []
 
     static let path = URL(fileURLWithPath: "/Users/arthur/whisper-hotkey/config.json")
 
@@ -97,6 +99,9 @@ struct OverlayConfig {
         if let k = json["submitKeys"] as? [String: String], !k.isEmpty {
             config.submitKeys = k
         }
+        if let langs = json["pinnedLanguages"] as? [String] {
+            config.pinnedLanguages = langs
+        }
         return config
     }
 
@@ -124,7 +129,8 @@ struct OverlayConfig {
             "fillColorHex": null
           },
           "server": { "enabled": true, "port": 8642 },
-          "submitKeys": { "default": "enter" }
+          "submitKeys": { "default": "enter" },
+          "pinnedLanguages": []
         }
         """
         try? defaults.write(to: path, atomically: true, encoding: .utf8)
