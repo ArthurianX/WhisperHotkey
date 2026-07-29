@@ -14,6 +14,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     private var recordingStartTime: Date?
     private var transcribing = false
     private let overlay = CountdownOverlay()
+    private var server: WhisperServer?
 
     private var whisperBin: URL {
         whisperRoot.appendingPathComponent("build/bin/whisper-cli")
@@ -37,6 +38,31 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
     private var logFile: URL {
         runtimeDir.appendingPathComponent("whisper-hotkey.log")
+    }
+
+    private var serverLogFile: URL {
+        runtimeDir.appendingPathComponent("whisper-server.log")
+    }
+
+    func startServerIfEnabled() {
+        let config = OverlayConfig.load()
+        guard config.serverEnabled else {
+            log("whisper-server disabled in config; using whisper-cli.")
+            return
+        }
+        let server = WhisperServer(
+            whisperRoot: whisperRoot,
+            modelFile: modelFile,
+            port: config.serverPort,
+            logFile: serverLogFile,
+            log: { [weak self] in self?.log($0) }
+        )
+        self.server = server
+        server.start()
+    }
+
+    func shutdown() {
+        server?.stop()
     }
 
     func keyDown() {
@@ -131,40 +157,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
                 return
             }
 
-            try? FileManager.default.removeItem(at: self.transcriptFile)
-
-            let process = Process()
-            process.currentDirectoryURL = self.whisperRoot
-            process.executableURL = self.whisperBin
-            process.arguments = [
-                "-m", self.modelFile.path,
-                "-f", self.wavFile.path,
-                "-otxt",
-                "-of", self.transcriptBase.path,
-                "-nt",
-                "-np",
-                "-l", "auto"
-            ]
-
-            let logHandle = self.openLogHandle()
-            process.standardOutput = logHandle
-            process.standardError = logHandle
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                self.log("Failed to launch whisper-cli: \(error)")
-                DispatchQueue.main.async {
-                    self.notify(title: "Whisper", body: "Could not run whisper-cli.")
-                }
-                return
-            }
-
-            guard process.terminationStatus == 0,
-                  let transcript = try? String(contentsOf: self.transcriptFile, encoding: .utf8)
-            else {
-                self.log("Transcription failed with status \(process.terminationStatus).")
+            guard let transcript = self.runTranscription() else {
                 DispatchQueue.main.async {
                     self.notify(title: "Whisper", body: "Transcription failed. See /tmp/whisper-hotkey.")
                 }
@@ -189,6 +182,59 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
                 }
             }
         }
+    }
+
+    /// Background queue only. Tries the resident server, falls back to whisper-cli.
+    private func runTranscription() -> String? {
+        let config = OverlayConfig.load()
+        if config.serverEnabled, let server {
+            let started = Date()
+            if let text = server.transcribe(wav: wavFile) {
+                log(String(format: "whisper-server transcribed in %.2fs.", Date().timeIntervalSince(started)))
+                return text
+            }
+            log("whisper-server unavailable; falling back to whisper-cli.")
+            server.respawnIfNeeded()
+        }
+        return runWhisperCLI()
+    }
+
+    /// Background queue only. The original CLI path.
+    private func runWhisperCLI() -> String? {
+        try? FileManager.default.removeItem(at: transcriptFile)
+
+        let process = Process()
+        process.currentDirectoryURL = whisperRoot
+        process.executableURL = whisperBin
+        process.arguments = [
+            "-m", modelFile.path,
+            "-f", wavFile.path,
+            "-otxt",
+            "-of", transcriptBase.path,
+            "-nt",
+            "-np",
+            "-l", "auto"
+        ]
+
+        let logHandle = openLogHandle()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log("Failed to launch whisper-cli: \(error)")
+            return nil
+        }
+
+        guard process.terminationStatus == 0,
+              let transcript = try? String(contentsOf: transcriptFile, encoding: .utf8)
+        else {
+            log("Transcription failed with status \(process.terminationStatus).")
+            return nil
+        }
+        return transcript
     }
 
     private func pasteIntoFocusedField() -> Bool {
@@ -426,6 +472,17 @@ let controller = WhisperController()
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.finishLaunching()
+
+controller.startServerIfEnabled()
+
+// build.sh relaunches us with pkill (SIGTERM): take the child server down with us.
+signal(SIGTERM, SIG_IGN)
+let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+sigtermSource.setEventHandler {
+    controller.shutdown()
+    exit(0)
+}
+sigtermSource.resume()
 
 func fourCharCode(_ value: String) -> OSType {
     var result: OSType = 0
