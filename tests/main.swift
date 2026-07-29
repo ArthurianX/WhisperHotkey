@@ -45,5 +45,15 @@ expect(defaults.serverPort == 8642, "default server.port 8642")
 expect(defaults.submitChord(forBundleID: "anything") == .enter, "default submit is enter")
 expect(defaults.title(seconds: 5) == "Submitting in 5s", "default titleFormat has no {key}")
 
+// --- pickPinnedLanguage ---
+expect(pickPinnedLanguage(probabilities: ["ro": 0.9, "en": 0.05, "ru": 0.9], pinned: []) == nil, "empty pinned list disables pinning")
+expect(pickPinnedLanguage(probabilities: ["ro": 0.9, "en": 0.05], pinned: ["ro"]) == nil, "single-entry pinned list disables pinning")
+expect(pickPinnedLanguage(probabilities: ["ro": 0.9, "en": 0.05], pinned: ["ro", "en"]) == nil, "global winner already matches pinned winner")
+expect(pickPinnedLanguage(probabilities: ["ru": 0.6, "ro": 0.3, "en": 0.1], pinned: ["ro", "en"]) == "ro", "global winner is a third language; retries to higher-scoring pinned language")
+expect(pickPinnedLanguage(probabilities: ["fr": 0.5, "en": 0.4, "ro": 0.1], pinned: ["ro", "en"]) == "en", "global winner is a third language; retries to en when en scores higher than ro")
+expect(pickPinnedLanguage(probabilities: ["ru": 0.6, "ro": 0.3], pinned: ["ro", "en"]) == "ro", "missing pinned entry (en absent) treated as 0")
+expect(pickPinnedLanguage(probabilities: ["ru": 1.0], pinned: ["ro", "en"]) == "ro", "both pinned entries missing; ro wins tie as first in pinned order")
+expect(pickPinnedLanguage(probabilities: [:], pinned: ["ro", "en"]) == nil, "empty probabilities dict; nothing to compare, no retry")
+
 if failures > 0 { print("\(failures) FAILURES"); exit(1) }
 print("ALL TESTS PASSED")
