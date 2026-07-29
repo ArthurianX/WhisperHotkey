@@ -378,6 +378,25 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 }
 
 final class CountdownOverlay {
+    private static let debugLogFile = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("whisper-hotkey", isDirectory: true)
+        .appendingPathComponent("whisper-hotkey.log")
+
+    private func debugLog(_ message: String) {
+        try? FileManager.default.createDirectory(at: Self.debugLogFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(stamp)] [overlay-debug] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if !FileManager.default.fileExists(atPath: Self.debugLogFile.path) {
+            FileManager.default.createFile(atPath: Self.debugLogFile.path, contents: nil)
+        }
+        if let handle = try? FileHandle(forWritingTo: Self.debugLogFile) {
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        }
+    }
+
     private var panel: NSPanel?
     private var timer: Timer?
     private var monitor: Any?
@@ -397,6 +416,9 @@ final class CountdownOverlay {
         self.onComplete = onComplete
         self.onCancel = onCancel
         self.startTime = Date()
+
+        let screens = NSScreen.screens
+        debugLog("show() called. screens=\(screens.count) main=\(NSScreen.main?.frame.debugDescription ?? "nil") appActive=\(NSApp.isActive) activationPolicy=\(NSApp.activationPolicy().rawValue) occlusionState=\(NSApp.occlusionState.rawValue)")
 
         // Clamp to minimums so a small config value can't collapse the overlay out of view.
         let width = max(config.width, 220)
@@ -471,6 +493,12 @@ final class CountdownOverlay {
         self.track = trackView
         self.fill = fillView
         panel.orderFrontRegardless()
+
+        debugLog("after orderFrontRegardless: isVisible=\(panel.isVisible) frame=\(panel.frame.debugDescription) screen=\(panel.screen?.frame.debugDescription ?? "nil") occlusionState=\(panel.occlusionState.rawValue)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak panel] in
+            guard let panel else { return }
+            self?.debugLog("300ms later: isVisible=\(panel.isVisible) frame=\(panel.frame.debugDescription) screen=\(panel.screen?.frame.debugDescription ?? "nil") occlusionState=\(panel.occlusionState.rawValue) screens=\(NSScreen.screens.count)")
+        }
 
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 { self?.cancel() }
