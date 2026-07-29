@@ -6,7 +6,7 @@ APP="$DIR/WhisperHotkey.app"
 BIN="$APP/Contents/MacOS/WhisperHotkey"
 IDENTITY="WhisperHotkey Local Signing"
 
-swiftc "$DIR/WhisperHotkey.swift" -o "$BIN.new"
+swiftc "$DIR"/*.swift -o "$BIN.new"
 chmod 755 "$BIN.new"
 mv "$BIN.new" "$BIN"
 
