@@ -40,6 +40,11 @@ struct OverlayConfig {
     var height: CGFloat = 120
     var tintColorHex: String? = nil   // e.g. "#3478F6"; null = no tint
     var fillColorHex: String? = nil   // progress bar fill; null = system accent
+    // whisper-server (resident model)
+    var serverEnabled = true
+    var serverPort = 8642
+    // bundle-id → chord string; "default" applies to unmapped apps
+    var submitKeys: [String: String] = ["default": "enter"]
 
     static let path = URL(fileURLWithPath: "/Users/arthur/whisper-hotkey/config.json")
 
@@ -49,13 +54,20 @@ struct OverlayConfig {
         return longSeconds
     }
 
-    func title(seconds: Int) -> String {
-        titleFormat.replacingOccurrences(of: "{seconds}", with: "\(seconds)")
+    func title(seconds: Int, keyDisplay: String = "↩") -> String {
+        titleFormat
+            .replacingOccurrences(of: "{seconds}", with: "\(seconds)")
+            .replacingOccurrences(of: "{key}", with: keyDisplay)
     }
 
-    static func load() -> OverlayConfig {
+    func submitChord(forBundleID id: String?) -> SubmitChord {
+        let raw = id.flatMap { submitKeys[$0] } ?? submitKeys["default"] ?? "enter"
+        return SubmitChord.parse(raw) ?? .enter
+    }
+
+    static func load(from url: URL = OverlayConfig.path) -> OverlayConfig {
         var config = OverlayConfig()
-        guard let data = try? Data(contentsOf: path),
+        guard let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return config
         }
@@ -77,6 +89,13 @@ struct OverlayConfig {
             if let v = g["height"] as? Double { config.height = CGFloat(v) }
             config.tintColorHex = g["tintColorHex"] as? String
             config.fillColorHex = g["fillColorHex"] as? String
+        }
+        if let s = json["server"] as? [String: Any] {
+            if let v = s["enabled"] as? Bool { config.serverEnabled = v }
+            if let v = s["port"] as? Int { config.serverPort = v }
+        }
+        if let k = json["submitKeys"] as? [String: String], !k.isEmpty {
+            config.submitKeys = k
         }
         return config
     }
@@ -103,7 +122,9 @@ struct OverlayConfig {
             "height": 120,
             "tintColorHex": null,
             "fillColorHex": null
-          }
+          },
+          "server": { "enabled": true, "port": 8642 },
+          "submitKeys": { "default": "enter" }
         }
         """
         try? defaults.write(to: path, atomically: true, encoding: .utf8)
