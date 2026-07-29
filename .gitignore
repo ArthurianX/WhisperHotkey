@@ -3,3 +3,4 @@ module-cache/
 WhisperHotkey.app/
 .tokensave/
 config.json
+.codesign-setup/
