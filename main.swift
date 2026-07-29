@@ -14,6 +14,8 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     private var recordingStartTime: Date?
     private var transcribing = false
     private let overlay = CountdownOverlay()
+    private let recordingOverlay = RecordingOverlay()
+    private var meterTimer: Timer?
     private var server: WhisperServer?
 
     private var whisperBin: URL {
@@ -110,19 +112,30 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
             let nextRecorder = try AVAudioRecorder(url: wavFile, settings: settings)
             nextRecorder.delegate = self
+            nextRecorder.isMeteringEnabled = true
             nextRecorder.prepareToRecord()
             nextRecorder.record()
             recorder = nextRecorder
             recordingStartTime = Date()
-            notify(title: "Whisper", body: "Recording... release the hotkey to stop.")
+            recordingOverlay.show(config: OverlayConfig.load())
+            meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                guard let self, let recorder = self.recorder, recorder.isRecording else { return }
+                recorder.updateMeters()
+                let db = recorder.averagePower(forChannel: 0)  // -160...0 dBFS
+                let level = max(0, min(1, (CGFloat(db) + 50) / 50))
+                self.recordingOverlay.push(level: level)
+            }
             log("Recording started.")
         } catch {
+            recordingOverlay.dismiss()
             notify(title: "Whisper", body: "Could not start recording.")
             log("Recording start failed: \(error)")
         }
     }
 
     private func stopRecording() {
+        meterTimer?.invalidate()
+        meterTimer = nil
         recorder?.stop()
         recorder = nil
         let startTime = recordingStartTime
@@ -130,11 +143,12 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
         if let startTime, Date().timeIntervalSince(startTime) < Self.minimumHoldDuration {
             log("Hold too short (\(Date().timeIntervalSince(startTime))s); discarding recording.")
+            recordingOverlay.dismiss()
             try? FileManager.default.removeItem(at: wavFile)
             return
         }
 
-        notify(title: "Whisper", body: "Transcribing...")
+        recordingOverlay.setTranscribing()
         log("Recording stopped.")
         transcribe()
     }
@@ -151,6 +165,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
             guard FileManager.default.fileExists(atPath: self.wavFile.path) else {
                 DispatchQueue.main.async {
+                    self.recordingOverlay.dismiss()
                     self.notify(title: "Whisper", body: "No recording found.")
                 }
                 self.log("No recording found.")
@@ -159,6 +174,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
             guard let transcript = self.runTranscription() else {
                 DispatchQueue.main.async {
+                    self.recordingOverlay.dismiss()
                     self.notify(title: "Whisper", body: "Transcription failed. See /tmp/whisper-hotkey.")
                 }
                 return
@@ -171,9 +187,9 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
                 .joined(separator: "\n")
 
             DispatchQueue.main.async {
+                self.recordingOverlay.dismiss()
                 self.copyToClipboard(cleaned)
                 if self.pasteIntoFocusedField() {
-                    self.notify(title: "Whisper", body: "Transcript pasted.")
                     self.log("Transcript copied to clipboard and auto-pasted.")
                     self.startCountdown(for: cleaned)
                 } else {
@@ -379,36 +395,7 @@ final class CountdownOverlay {
         // Clamp to minimums so a small config value can't collapse the overlay out of view.
         let width = max(config.width, 220)
         let height = max(config.height, 110)
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered, defer: false
-        )
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.ignoresMouseEvents = true
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-
-        let cornerRadius = config.cornerRadius
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        content.wantsLayer = true
-
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            glass.style = config.glassStyle.lowercased() == "clear" ? .clear : .regular
-            glass.cornerRadius = cornerRadius
-            if let hex = config.tintColorHex, let tint = NSColor(hex: hex) { glass.tintColor = tint }
-            glass.contentView = content
-            panel.contentView = glass
-        } else {
-            content.layer?.backgroundColor = NSColor(white: 0.0, alpha: 0.82).cgColor
-            content.layer?.cornerRadius = cornerRadius
-            panel.contentView = content
-        }
+        let (panel, content) = makeGlassPanel(width: width, height: height, config: config)
 
         let title = NSTextField(labelWithString: config.title(seconds: Int(ceil(duration)), keyDisplay: keyDisplay()))
         title.font = .systemFont(ofSize: 18, weight: .semibold)
