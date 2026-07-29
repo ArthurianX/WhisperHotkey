@@ -66,9 +66,37 @@ final class WhisperServer {
         p.waitUntilExit()
     }
 
-    /// Synchronous multipart POST to /inference. Call from a background queue.
+    /// Synchronous call to /inference. Applies language pinning when
+    /// `pinnedLanguages` has 2+ entries — see
+    /// docs/superpowers/specs/2026-07-29-language-pinning-design.md.
     /// Returns nil on any failure (caller falls back to whisper-cli).
-    func transcribe(wav: URL) -> String? {
+    func transcribe(wav: URL, pinnedLanguages: [String] = []) -> String? {
+        let pinningEnabled = pinnedLanguages.count >= 2
+        guard let first = performInference(wav: wav, language: "auto", verboseJSON: pinningEnabled) else {
+            return nil
+        }
+        guard pinningEnabled,
+              let probabilities = first.languageProbabilities,
+              let pinnedWinner = pickPinnedLanguage(probabilities: probabilities, pinned: pinnedLanguages)
+        else {
+            return first.text
+        }
+
+        log("Language pinning: global auto-detect disagreed with pinned set \(pinnedLanguages); retrying forced to \(pinnedWinner).")
+        guard let retry = performInference(wav: wav, language: pinnedWinner, verboseJSON: false) else {
+            log("Language pinning retry failed; using original (possibly wrong-language) transcript.")
+            return first.text
+        }
+        return retry.text
+    }
+
+    private struct InferenceResult {
+        let text: String
+        let languageProbabilities: [String: Double]?
+    }
+
+    /// One synchronous multipart POST to /inference. Call from a background queue.
+    private func performInference(wav: URL, language: String, verboseJSON: Bool) -> InferenceResult? {
         guard let audio = try? Data(contentsOf: wav),
               let url = URL(string: "http://127.0.0.1:\(port)/inference") else { return nil }
 
@@ -82,7 +110,8 @@ final class WhisperServer {
         func appendField(_ name: String, _ value: String) {
             body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
         }
-        appendField("response_format", "text")
+        appendField("response_format", verboseJSON ? "verbose_json" : "text")
+        appendField("language", language)
         appendField("temperature", "0.0")
         body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
         body.append(audio)
@@ -90,16 +119,28 @@ final class WhisperServer {
         request.httpBody = body
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: String?
+        var result: InferenceResult?
         URLSession.shared.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error { self.log("whisper-server request failed: \(error.localizedDescription)"); return }
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200, let data,
-                  let text = String(data: data, encoding: .utf8) else {
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200, let data else {
                 self.log("whisper-server bad response: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
                 return
             }
-            result = text
+            if verboseJSON {
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let text = json["text"] as? String else {
+                    self.log("whisper-server verbose_json response missing text field")
+                    return
+                }
+                result = InferenceResult(text: text, languageProbabilities: json["language_probabilities"] as? [String: Double])
+            } else {
+                guard let text = String(data: data, encoding: .utf8) else {
+                    self.log("whisper-server response not valid UTF-8")
+                    return
+                }
+                result = InferenceResult(text: text, languageProbabilities: nil)
+            }
         }.resume()
         semaphore.wait()
         return result

@@ -205,7 +205,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
         let config = OverlayConfig.load()
         if config.serverEnabled, let server {
             let started = Date()
-            if let text = server.transcribe(wav: wavFile) {
+            if let text = server.transcribe(wav: wavFile, pinnedLanguages: config.pinnedLanguages) {
                 log(String(format: "whisper-server transcribed in %.2fs.", Date().timeIntervalSince(started)))
                 return text
             }
