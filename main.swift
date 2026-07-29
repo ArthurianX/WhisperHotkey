@@ -256,20 +256,38 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
         guard !text.isEmpty else { return }
         let config = OverlayConfig.load()
         let words = text.split(whereSeparator: { $0.isWhitespace }).count
-        overlay.show(duration: config.duration(forWordCount: words), config: config, onComplete: { [weak self] in
-            self?.sendReturnKey()
-            self?.log("Auto-submitted transcript.")
-        }, onCancel: { [weak self] in
-            self?.log("Auto-submit cancelled by user.")
-        })
+        // Malformed submitKeys chord strings fall back to enter; warn once per countdown.
+        for (app, raw) in config.submitKeys where SubmitChord.parse(raw) == nil {
+            log("Invalid submitKeys chord \"\(raw)\" for \(app); using enter.")
+        }
+        // Chord is resolved against the frontmost app both for display (each tick)
+        // and at fire time — submit follows focus (spec §5, Q2).
+        let currentChord = {
+            config.submitChord(forBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        }
+        overlay.show(
+            duration: config.duration(forWordCount: words),
+            config: config,
+            keyDisplay: { currentChord().display },
+            onComplete: { [weak self] in
+                let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                let chord = currentChord()
+                self?.sendChord(chord)
+                self?.log("Auto-submitted transcript with \(chord.display) to \(bundleID ?? "unknown app").")
+            },
+            onCancel: { [weak self] in
+                self?.log("Auto-submit cancelled by user.")
+            }
+        )
     }
 
-    private func sendReturnKey() {
+    private func sendChord(_ chord: SubmitChord) {
         guard AXIsProcessTrusted() else { return }
         let source = CGEventSource(stateID: .hidSystemState)
-        let vKeyCode: CGKeyCode = 36
-        let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: true)
+        down?.flags = chord.flags
+        let up = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: false)
+        up?.flags = chord.flags
         down?.post(tap: .cgSessionEventTap)
         up?.post(tap: .cgSessionEventTap)
     }
@@ -344,11 +362,13 @@ final class CountdownOverlay {
     private var track: NSView?
     private var fill: NSView?
     private var config = OverlayConfig()
+    private var keyDisplay: (() -> String) = { "↩" }
 
-    func show(duration: TimeInterval, config: OverlayConfig, onComplete: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    func show(duration: TimeInterval, config: OverlayConfig, keyDisplay: @escaping () -> String = { "↩" }, onComplete: @escaping () -> Void, onCancel: @escaping () -> Void) {
         dismiss()
         self.config = config
         self.duration = duration
+        self.keyDisplay = keyDisplay
         self.onComplete = onComplete
         self.onCancel = onCancel
         self.startTime = Date()
@@ -390,7 +410,7 @@ final class CountdownOverlay {
             panel.contentView = content
         }
 
-        let title = NSTextField(labelWithString: config.title(seconds: Int(ceil(duration))))
+        let title = NSTextField(labelWithString: config.title(seconds: Int(ceil(duration)), keyDisplay: keyDisplay()))
         title.font = .systemFont(ofSize: 18, weight: .semibold)
         title.textColor = .labelColor
         title.alignment = .center
@@ -449,7 +469,7 @@ final class CountdownOverlay {
         let remaining = max(0, duration - Date().timeIntervalSince(startTime))
         let fraction = CGFloat(max(0, min(1, remaining / duration)))
         if let track, let fill { fill.frame.size.width = track.bounds.width * fraction }
-        titleLabel?.stringValue = config.title(seconds: Int(ceil(remaining)))
+        titleLabel?.stringValue = config.title(seconds: Int(ceil(remaining)), keyDisplay: keyDisplay())
         if remaining <= 0 { complete() }
     }
 
@@ -464,6 +484,7 @@ final class CountdownOverlay {
         panel?.orderOut(nil); panel = nil
         startTime = nil; onComplete = nil; onCancel = nil
         titleLabel = nil; track = nil; fill = nil
+        keyDisplay = { "↩" }
     }
 }
 
