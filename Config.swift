@@ -43,6 +43,9 @@ struct OverlayConfig {
     // whisper-server (resident model)
     var serverEnabled = true
     var serverPort = 8642
+    // idle seconds after which recording fires a warm-up inference; 0 disables.
+    // Kept under ggml's 180s Metal residency keep-alive — see WarmUp.swift.
+    var serverWarmUpAfterSeconds: TimeInterval = 120
     // bundle-id → chord string; "default" applies to unmapped apps
     var submitKeys: [String: String] = ["default": "enter"]
     // language codes (e.g. "ro", "en") to restrict auto-detect to; empty/single-entry = disabled
@@ -95,6 +98,7 @@ struct OverlayConfig {
         if let s = json["server"] as? [String: Any] {
             if let v = s["enabled"] as? Bool { config.serverEnabled = v }
             if let v = s["port"] as? Int { config.serverPort = v }
+            if let v = s["warmUpAfterSeconds"] as? Double { config.serverWarmUpAfterSeconds = v }
         }
         if let k = json["submitKeys"] as? [String: String], !k.isEmpty {
             config.submitKeys = k
@@ -128,7 +132,7 @@ struct OverlayConfig {
             "tintColorHex": null,
             "fillColorHex": null
           },
-          "server": { "enabled": true, "port": 8642 },
+          "server": { "enabled": true, "port": 8642, "warmUpAfterSeconds": 120 },
           "submitKeys": { "default": "enter" },
           "pinnedLanguages": []
         }

@@ -60,7 +60,7 @@ final class RecordingOverlay {
 
         self.panel = panel
         self.statusLabel = label
-        panel.orderFrontRegardless()
+        OverlayDebug.orderFrontLogging(panel, "recording")
     }
 
     private static func statusText(_ text: String) -> NSAttributedString {

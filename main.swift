@@ -17,6 +17,9 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     private let recordingOverlay = RecordingOverlay()
     private var meterTimer: Timer?
     private var server: WhisperServer?
+    /// For the log line correlating first-use-after-a-gap with transcription time.
+    private var lastDictationAt: Date?
+    private var warmedThisDictation = false
 
     private var whisperBin: URL {
         whisperRoot.appendingPathComponent("build/bin/whisper-cli")
@@ -97,7 +100,14 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
 
     private func startRecording() {
         do {
+            let config = OverlayConfig.load()
             try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+
+            // The model's Metal buffers unwire after ~180s idle and can then be
+            // swapped out, which is what makes the first dictation of the day
+            // slow. Page them back in now, while the user is still talking.
+            warmedThisDictation = server?.warmUp(afterSeconds: config.serverWarmUpAfterSeconds) ?? false
+
             try? FileManager.default.removeItem(at: wavFile)
             try? FileManager.default.removeItem(at: transcriptFile)
 
@@ -117,7 +127,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
             nextRecorder.record()
             recorder = nextRecorder
             recordingStartTime = Date()
-            recordingOverlay.show(config: OverlayConfig.load())
+            recordingOverlay.show(config: config)
             meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
                 guard let self, let recorder = self.recorder, recorder.isRecording else { return }
                 recorder.updateMeters()
@@ -203,10 +213,15 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
     /// Background queue only. Tries the resident server, falls back to whisper-cli.
     private func runTranscription() -> String? {
         let config = OverlayConfig.load()
+        let gap = lastDictationAt.map { Date().timeIntervalSince($0) }
+        lastDictationAt = Date()
         if config.serverEnabled, let server {
             let started = Date()
             if let text = server.transcribe(wav: wavFile, pinnedLanguages: config.pinnedLanguages) {
-                log(String(format: "whisper-server transcribed in %.2fs.", Date().timeIntervalSince(started)))
+                log(String(format: "whisper-server transcribed in %.2fs (gap since last dictation: %@, warmed: %@).",
+                           Date().timeIntervalSince(started),
+                           gap.map { String(format: "%.0fs", $0) } ?? "first since launch",
+                           warmedThisDictation ? "yes" : "no"))
                 return text
             }
             log("whisper-server unavailable; falling back to whisper-cli.")
@@ -355,24 +370,7 @@ private final class ClickCatcherView: NSView {
 }
 
 final class CountdownOverlay {
-    private static let debugLogFile = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("whisper-hotkey", isDirectory: true)
-        .appendingPathComponent("whisper-hotkey.log")
-
-    private func debugLog(_ message: String) {
-        try? FileManager.default.createDirectory(at: Self.debugLogFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(stamp)] [overlay-debug] \(message)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        if !FileManager.default.fileExists(atPath: Self.debugLogFile.path) {
-            FileManager.default.createFile(atPath: Self.debugLogFile.path, contents: nil)
-        }
-        if let handle = try? FileHandle(forWritingTo: Self.debugLogFile) {
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-            try? handle.close()
-        }
-    }
+    private func debugLog(_ message: String) { OverlayDebug.log(message) }
 
     private var panel: NSPanel?
     private var timer: Timer?
@@ -397,9 +395,6 @@ final class CountdownOverlay {
         self.onComplete = onComplete
         self.onCancel = onCancel
         self.startTime = Date()
-
-        let screens = NSScreen.screens
-        debugLog("show() called. screens=\(screens.count) main=\(NSScreen.main?.frame.debugDescription ?? "nil") appActive=\(NSApp.isActive) activationPolicy=\(NSApp.activationPolicy().rawValue) occlusionState=\(NSApp.occlusionState.rawValue)")
 
         // Clamp to minimums so a small config value can't collapse the overlay out of view.
         let width = max(config.width, 220)
@@ -448,12 +443,11 @@ final class CountdownOverlay {
         self.titleLabel = title
         self.track = trackView
         self.fill = fillView
-        panel.orderFrontRegardless()
+        OverlayDebug.orderFrontLogging(panel, "countdown")
 
-        debugLog("after orderFrontRegardless: isVisible=\(panel.isVisible) frame=\(panel.frame.debugDescription) screen=\(panel.screen?.frame.debugDescription ?? "nil") occlusionState=\(panel.occlusionState.rawValue)")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak panel] in
-            guard let panel else { return }
-            self?.debugLog("300ms later: isVisible=\(panel.isVisible) frame=\(panel.frame.debugDescription) screen=\(panel.screen?.frame.debugDescription ?? "nil") occlusionState=\(panel.occlusionState.rawValue) screens=\(NSScreen.screens.count)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak panel] in
+            guard let panel, !panel.isVisible else { return }
+            OverlayDebug.log(OverlayDebug.probe("countdown 300ms later", panel))
         }
 
         installKeyInterceptor()
@@ -541,6 +535,13 @@ let controller = WhisperController()
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.finishLaunching()
+
+// The LaunchAgent starts us with `open -gj`, and `-j` means "launch hidden".
+// While NSApp is hidden AppKit backs our panels with real window-server windows
+// but refuses to order them in, so no overlay ever appears while every other
+// code path (timers, clipboard, CGEvent posting) keeps working. Undo it without
+// activating, so we never steal focus from whatever the user is typing into.
+app.unhideWithoutActivation()
 
 controller.startServerIfEnabled()
 

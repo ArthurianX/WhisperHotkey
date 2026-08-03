@@ -9,6 +9,23 @@ final class WhisperServer {
     private let log: (String) -> Void
     private var process: Process?
 
+    /// Last time the model actually computed something — loading it at startup
+    /// counts, since that leaves it resident. Guarded by `stateLock` because
+    /// inference runs on a background queue while warm-ups run on another.
+    private let stateLock = NSLock()
+    private var lastComputeAt = Date()
+    private var warmUpInFlight = false
+
+    private var secondsSinceCompute: TimeInterval {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return Date().timeIntervalSince(lastComputeAt)
+    }
+
+    private func noteCompute() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        lastComputeAt = Date()
+    }
+
     init(whisperRoot: URL, modelFile: URL, port: Int, logFile: URL, log: @escaping (String) -> Void) {
         self.whisperRoot = whisperRoot
         self.modelFile = modelFile
@@ -36,10 +53,44 @@ final class WhisperServer {
         do {
             try p.run()
             process = p
+            noteCompute()
             log("whisper-server started (pid \(p.processIdentifier), port \(port)).")
         } catch {
             log("Failed to launch whisper-server: \(error)")
         }
+    }
+
+    /// Fire-and-forget throwaway inference that pages the model back in while
+    /// the user is still talking, so the real request doesn't stall on it.
+    /// Safe to call from the main queue; returns immediately. No-op when the
+    /// model was used recently enough to still be wired — see `shouldWarmUp`.
+    /// Returns whether a warm-up was actually started, for the log line that
+    /// pairs it with the transcription it was meant to speed up.
+    @discardableResult
+    func warmUp(afterSeconds threshold: TimeInterval) -> Bool {
+        let idle = secondsSinceCompute
+        guard shouldWarmUp(idleSeconds: idle, warmUpAfterSeconds: threshold) else { return false }
+
+        stateLock.lock()
+        if warmUpInFlight { stateLock.unlock(); return false }
+        warmUpInFlight = true
+        stateLock.unlock()
+
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            defer {
+                stateLock.lock(); warmUpInFlight = false; stateLock.unlock()
+            }
+            let wav = logFile.deletingLastPathComponent().appendingPathComponent("warmup.wav")
+            guard (try? silentWavData(seconds: 1.0, sampleRate: 16000).write(to: wav)) != nil else {
+                log("Warm-up skipped: could not write \(wav.lastPathComponent).")
+                return
+            }
+            let started = Date()
+            let ok = performInference(wav: wav, language: "en", verboseJSON: false) != nil
+            log(String(format: "Warm-up ping after %.0fs idle %@ in %.2fs.",
+                       idle, ok ? "succeeded" : "failed", Date().timeIntervalSince(started)))
+        }
+        return true
     }
 
     func stop() {
@@ -143,6 +194,7 @@ final class WhisperServer {
             }
         }.resume()
         semaphore.wait()
+        if result != nil { noteCompute() }
         return result
     }
 }
