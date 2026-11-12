@@ -4,3 +4,7 @@ WhisperHotkey.app/
 .tokensave/
 config.json
 .codesign-setup/
+
+# Serena: project.yml is versioned; the local overrides and the LSP cache are not.
+.serena/cache/
+.serena/project.local.yml

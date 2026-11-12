@@ -17,6 +17,14 @@ final class RecordingOverlay {
     private var statusLabel: NSTextField?
     private var transcribing = false
 
+    /// dBFS (−160…0) mapped to 0…1, floored at −55 dB so room tone and the
+    /// meter's own noise floor leave the bars flat instead of jittering.
+    static func level(fromDB db: Double) -> CGFloat {
+        let floor = -55.0
+        guard db > floor else { return 0 }
+        return CGFloat(min(1.0, (db - floor) / (0.0 - floor)))
+    }
+
     func show(config: OverlayConfig) {
         dismiss()
         transcribing = false
@@ -60,7 +68,7 @@ final class RecordingOverlay {
 
         self.panel = panel
         self.statusLabel = label
-        OverlayDebug.orderFrontLogging(panel, "recording")
+        OverlayDebug.orderFront(panel, label: "recording")
     }
 
     private static func statusText(_ text: String) -> NSAttributedString {

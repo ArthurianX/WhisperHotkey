@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 
 extension NSColor {
     convenience init?(hex: String) {
@@ -21,8 +22,12 @@ extension NSColor {
     }
 }
 
-/// User-editable settings for the countdown overlay, loaded from `config.json`.
-/// Any missing or malformed key falls back to the default value below.
+/// User-editable settings, read from `config.json` (see `RuntimePaths.configFile`
+/// for which file that is). Any missing key falls back to the default below.
+///
+/// A file that exists but does not parse is reported through `log` rather than
+/// silently replaced by defaults — otherwise a stray comma turns the user's
+/// settings off with no trace.
 struct OverlayConfig {
     // countdown durations (seconds) by transcript word count
     var shortWordMax = 8
@@ -40,6 +45,9 @@ struct OverlayConfig {
     var height: CGFloat = 120
     var tintColorHex: String? = nil   // e.g. "#3478F6"; null = no tint
     var fillColorHex: String? = nil   // progress bar fill; null = system accent
+    // whisper.cpp install
+    var whisperRootPath = (NSString(string: "~/whisper.cpp")).expandingTildeInPath
+    var modelFileName = "ggml-large-v3-turbo.bin"
     // whisper-server (resident model)
     var serverEnabled = true
     var serverPort = 8642
@@ -50,8 +58,17 @@ struct OverlayConfig {
     var submitKeys: [String: String] = ["default": "enter"]
     // language codes (e.g. "ro", "en") to restrict auto-detect to; empty/single-entry = disabled
     var pinnedLanguages: [String] = []
+    // trade the two-pass auto-detect for one pass forced to pinnedLanguages[0]
+    var forcePrimaryLanguage = false
+    // hold-to-dictate hotkey
+    var hotKeyKey = "r"
+    var hotKeyModifiers = ["cmd", "opt", "ctrl"]
+    // refuse to type the transcript when the focused app changed mid-dictation
+    var requireUnchangedFocus = true
+    // verbose overlay diagnostics; off unless someone is chasing a visibility bug
+    var overlayDiagnostics = false
 
-    static let path = URL(fileURLWithPath: "/Users/arthur/whisper-hotkey/config.json")
+    static var path: URL { RuntimePaths.configFile }
 
     func duration(forWordCount words: Int) -> TimeInterval {
         if words <= shortWordMax { return shortSeconds }
@@ -70,12 +87,38 @@ struct OverlayConfig {
         return SubmitChord.parse(raw) ?? .enter
     }
 
-    static func load(from url: URL = OverlayConfig.path) -> OverlayConfig {
+    /// The registered hotkey. An unbindable config value falls back to ⌃⌥⌘R.
+    func hotKey() -> HotKey {
+        HotKey.parse(key: hotKeyKey, modifiers: hotKeyModifiers) ?? .default
+    }
+
+    var whisperInstall: WhisperInstall {
+        WhisperInstall(root: URL(fileURLWithPath: whisperRootPath), modelFileName: modelFileName)
+    }
+
+    /// Chord strings that will never fire, e.g. `"cmd+f13"`. Reported once per
+    /// load instead of once per countdown.
+    var invalidSubmitKeys: [(app: String, raw: String)] {
+        submitKeys.compactMap { key, raw in SubmitChord.parse(raw) == nil ? (key, raw) : nil }
+    }
+
+    /// Loads settings, reporting anything unreadable or unusable through `log`.
+    /// `log` is a parameter rather than a global so tests can assert on warnings.
+    static func load(from url: URL = RuntimePaths.configFile, log: ((String) -> Void)? = nil) -> OverlayConfig {
         var config = OverlayConfig()
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        let warn: (String) -> Void = { message in log?(message) }
+
+        guard let data = try? Data(contentsOf: url) else {
+            if FileManager.default.fileExists(atPath: url.path) {
+                warn("Config at \(url.path) exists but could not be read; using defaults.")
+            }
             return config
         }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            warn("Config at \(url.path) is not a JSON object; using defaults.")
+            return config
+        }
+
         if let c = json["countdown"] as? [String: Any] {
             if let v = c["shortWordMax"] as? Int { config.shortWordMax = v }
             if let v = c["mediumWordMax"] as? Int { config.mediumWordMax = v }
@@ -88,12 +131,32 @@ struct OverlayConfig {
             if let v = m["cancelHint"] as? String { config.cancelHint = v }
         }
         if let g = json["glass"] as? [String: Any] {
-            if let v = g["style"] as? String { config.glassStyle = v }
+            if let v = g["style"] as? String {
+                if v.lowercased() == "regular" || v.lowercased() == "clear" {
+                    config.glassStyle = v
+                } else {
+                    warn("Unknown glass.style \"\(v)\"; using \"regular\".")
+                }
+            }
             if let v = g["cornerRadius"] as? Double { config.cornerRadius = CGFloat(v) }
             if let v = g["width"] as? Double { config.width = CGFloat(v) }
             if let v = g["height"] as? Double { config.height = CGFloat(v) }
-            config.tintColorHex = g["tintColorHex"] as? String
-            config.fillColorHex = g["fillColorHex"] as? String
+            if let v = g["tintColorHex"] as? String, NSColor(hex: v) == nil {
+                warn("Invalid glass.tintColorHex \"\(v)\"; no tint.")
+            } else {
+                config.tintColorHex = g["tintColorHex"] as? String
+            }
+            if let v = g["fillColorHex"] as? String, NSColor(hex: v) == nil {
+                warn("Invalid glass.fillColorHex \"\(v)\"; using system accent.")
+            } else {
+                config.fillColorHex = g["fillColorHex"] as? String
+            }
+        }
+        if let w = json["whisper"] as? [String: Any] {
+            if let v = w["root"] as? String, !v.isEmpty {
+                config.whisperRootPath = (NSString(string: v)).expandingTildeInPath
+            }
+            if let v = w["model"] as? String, !v.isEmpty { config.modelFileName = v }
         }
         if let s = json["server"] as? [String: Any] {
             if let v = s["enabled"] as? Bool { config.serverEnabled = v }
@@ -106,37 +169,68 @@ struct OverlayConfig {
         if let langs = json["pinnedLanguages"] as? [String] {
             config.pinnedLanguages = langs
         }
+        if let v = json["forcePrimaryLanguage"] as? Bool { config.forcePrimaryLanguage = v }
+        if let h = json["hotkey"] as? [String: Any] {
+            if let v = h["key"] as? String { config.hotKeyKey = v }
+            if let v = h["modifiers"] as? [String] { config.hotKeyModifiers = v }
+            if HotKey.parse(key: config.hotKeyKey, modifiers: config.hotKeyModifiers) == nil {
+                warn("Unbindable hotkey \(config.hotKeyKey) + \(config.hotKeyModifiers); using ⌃⌥⌘R.")
+            }
+        }
+        if let p = json["paste"] as? [String: Any], let v = p["requireUnchangedFocus"] as? Bool {
+            config.requireUnchangedFocus = v
+        }
+        if let d = json["debug"] as? [String: Any], let v = d["overlayDiagnostics"] as? Bool {
+            config.overlayDiagnostics = v
+        }
+
+        for (app, raw) in config.invalidSubmitKeys {
+            warn("Invalid submitKeys chord \"\(raw)\" for \(app); using enter.")
+        }
+        if config.forcePrimaryLanguage && config.pinnedLanguages.isEmpty {
+            warn("forcePrimaryLanguage is on but pinnedLanguages is empty; auto-detect stays in charge.")
+        }
         return config
     }
 
-    static func writeDefaultIfMissing() {
-        guard !FileManager.default.fileExists(atPath: path.path) else { return }
-        let defaults = """
-        {
-          "countdown": {
-            "shortWordMax": 8,
-            "mediumWordMax": 25,
-            "shortSeconds": 3,
-            "mediumSeconds": 4,
-            "longSeconds": 5
-          },
-          "messages": {
-            "titleFormat": "Submitting in {seconds}s",
-            "cancelHint": "press Esc to cancel"
-          },
-          "glass": {
-            "style": "regular",
-            "cornerRadius": 20,
-            "width": 360,
-            "height": 120,
-            "tintColorHex": null,
-            "fillColorHex": null
-          },
-          "server": { "enabled": true, "port": 8642, "warmUpAfterSeconds": 120 },
-          "submitKeys": { "default": "enter" },
-          "pinnedLanguages": []
-        }
-        """
-        try? defaults.write(to: path, atomically: true, encoding: .utf8)
+    /// The defaults as JSON, written to the config path on first run so the
+    /// user has something to edit. Built from the struct's own defaults, so the
+    /// two can't drift apart.
+    static func writeDefaultIfMissing(to url: URL = RuntimePaths.writableConfigFile) {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let defaults = OverlayConfig()
+        let json: [String: Any] = [
+            "countdown": [
+                "shortWordMax": defaults.shortWordMax,
+                "mediumWordMax": defaults.mediumWordMax,
+                "shortSeconds": defaults.shortSeconds,
+                "mediumSeconds": defaults.mediumSeconds,
+                "longSeconds": defaults.longSeconds,
+            ],
+            "messages": ["titleFormat": defaults.titleFormat, "cancelHint": defaults.cancelHint],
+            "glass": [
+                "style": defaults.glassStyle,
+                "cornerRadius": defaults.cornerRadius,
+                "width": defaults.width,
+                "height": defaults.height,
+                "tintColorHex": NSNull(),
+                "fillColorHex": NSNull(),
+            ],
+            "whisper": ["root": "~/whisper.cpp", "model": defaults.modelFileName],
+            "server": [
+                "enabled": defaults.serverEnabled,
+                "port": defaults.serverPort,
+                "warmUpAfterSeconds": defaults.serverWarmUpAfterSeconds,
+            ],
+            "submitKeys": ["default": "enter"],
+            "pinnedLanguages": [String](),
+            "forcePrimaryLanguage": false,
+            "hotkey": ["key": defaults.hotKeyKey, "modifiers": defaults.hotKeyModifiers],
+            "paste": ["requireUnchangedFocus": true],
+            "debug": ["overlayDiagnostics": false],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: url)
     }
 }

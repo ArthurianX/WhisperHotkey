@@ -1,9 +1,8 @@
 import Foundation
 
-/// Manages a resident whisper-server child process and talks to it over HTTP.
+/// Manages a resident `whisper-server` child process and talks to it over HTTP.
 final class WhisperServer {
-    private let whisperRoot: URL
-    private let modelFile: URL
+    private let install: WhisperInstall
     private let port: Int
     private let logFile: URL
     private let log: (String) -> Void
@@ -16,6 +15,10 @@ final class WhisperServer {
     private var lastComputeAt = Date()
     private var warmUpInFlight = false
 
+    private var pidFileURL: URL {
+        logFile.deletingLastPathComponent().appendingPathComponent("whisper-server.pid")
+    }
+
     private var secondsSinceCompute: TimeInterval {
         stateLock.lock(); defer { stateLock.unlock() }
         return Date().timeIntervalSince(lastComputeAt)
@@ -26,9 +29,8 @@ final class WhisperServer {
         lastComputeAt = Date()
     }
 
-    init(whisperRoot: URL, modelFile: URL, port: Int, logFile: URL, log: @escaping (String) -> Void) {
-        self.whisperRoot = whisperRoot
-        self.modelFile = modelFile
+    init(install: WhisperInstall, port: Int, logFile: URL, log: @escaping (String) -> Void) {
+        self.install = install
         self.port = port
         self.logFile = logFile
         self.log = log
@@ -37,10 +39,10 @@ final class WhisperServer {
     func start() {
         killStale()
         let p = Process()
-        p.currentDirectoryURL = whisperRoot
-        p.executableURL = whisperRoot.appendingPathComponent("build/bin/whisper-server")
+        p.currentDirectoryURL = install.root
+        p.executableURL = install.serverURL
         p.arguments = [
-            "-m", modelFile.path,
+            "-m", install.modelFile.path,
             "--host", "127.0.0.1",
             "--port", "\(port)",
             "-l", "auto"
@@ -54,6 +56,7 @@ final class WhisperServer {
             try p.run()
             process = p
             noteCompute()
+            try? "\(p.processIdentifier)".write(to: pidFileURL, atomically: true, encoding: .utf8)
             log("whisper-server started (pid \(p.processIdentifier), port \(port)).")
         } catch {
             log("Failed to launch whisper-server: \(error)")
@@ -89,6 +92,7 @@ final class WhisperServer {
             let ok = performInference(wav: wav, language: "en", verboseJSON: false) != nil
             log(String(format: "Warm-up ping after %.0fs idle %@ in %.2fs.",
                        idle, ok ? "succeeded" : "failed", Date().timeIntervalSince(started)))
+            try? FileManager.default.removeItem(at: wav)
         }
         return true
     }
@@ -96,6 +100,7 @@ final class WhisperServer {
     func stop() {
         process?.terminate()
         process = nil
+        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
     /// Safe to call from any queue; process management happens on main.
@@ -108,37 +113,62 @@ final class WhisperServer {
         }
     }
 
-    /// Kills whatever holds our port (a stale server from a previous app run).
+    /// Kills the server we recorded in the PID file, if it is still ours.
+    ///
+    /// Deliberately narrow: a previous version killed whatever held the port,
+    /// which could take out an unrelated dev server sharing the number. A PID
+    /// reused by another process is left alone — `comm` tells them apart.
     private func killStale() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "lsof -ti tcp:\(port) | xargs kill 2>/dev/null"]
-        try? p.run()
-        p.waitUntilExit()
+        guard let raw = try? String(contentsOf: pidFileURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let pid = Int32(raw), pid > 0 else { return }
+        if command(of: pid)?.contains("whisper-server") == true {
+            log("Stopping whisper-server left over from the previous run (pid \(pid)).")
+            kill(pid, SIGTERM)
+        }
+        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
-    /// Synchronous call to /inference. Applies language pinning when
-    /// `pinnedLanguages` has 2+ entries — see
-    /// docs/superpowers/specs/2026-07-29-language-pinning-design.md.
-    /// Returns nil on any failure (caller falls back to whisper-cli).
-    func transcribe(wav: URL, pinnedLanguages: [String] = []) -> String? {
-        let pinningEnabled = pinnedLanguages.count >= 2
-        guard let first = performInference(wav: wav, language: "auto", verboseJSON: pinningEnabled) else {
-            return nil
-        }
-        guard pinningEnabled,
-              let probabilities = first.languageProbabilities,
-              let pinnedWinner = pickPinnedLanguage(probabilities: probabilities, pinned: pinnedLanguages)
-        else {
-            return first.text
-        }
+    /// The executable name `ps` reports for `pid`, nil when there is no such process.
+    private func command(of pid: Int32) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-p", "\(pid)", "-o", "comm="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return out?.isEmpty == false ? out : nil
+    }
 
-        log("Language pinning: global auto-detect disagreed with pinned set \(pinnedLanguages); retrying forced to \(pinnedWinner).")
-        guard let retry = performInference(wav: wav, language: pinnedWinner, verboseJSON: false) else {
-            log("Language pinning retry failed; using original (possibly wrong-language) transcript.")
-            return first.text
+    /// Synchronous call to /inference. The language strategy comes from
+    /// `languagePlan` — see docs/superpowers/specs/2026-07-29-language-pinning-design.md.
+    /// Returns nil on any failure (caller falls back to whisper-cli).
+    func transcribe(wav: URL, pinnedLanguages: [String] = [], forcePrimary: Bool = false) -> String? {
+        switch languagePlan(pinned: pinnedLanguages, forcePrimary: forcePrimary) {
+        case .autoDetect:
+            return performInference(wav: wav, language: "auto", verboseJSON: false)?.text
+
+        case .forced(let primary):
+            return performInference(wav: wav, language: primary, verboseJSON: false)?.text
+
+        case .autoDetectWithPinning(let pinned):
+            guard let first = performInference(wav: wav, language: "auto", verboseJSON: true) else { return nil }
+            guard let probabilities = first.languageProbabilities,
+                  let pinnedWinner = pickPinnedLanguage(probabilities: probabilities, pinned: pinned)
+            else {
+                return first.text
+            }
+            log("Language pinning: global auto-detect disagreed with pinned set \(pinned); retrying forced to \(pinnedWinner).")
+            guard let retry = performInference(wav: wav, language: pinnedWinner, verboseJSON: false) else {
+                log("Language pinning retry failed; using original (possibly wrong-language) transcript.")
+                return first.text
+            }
+            return retry.text
         }
-        return retry.text
     }
 
     private struct InferenceResult {

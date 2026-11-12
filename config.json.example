@@ -1,0 +1,32 @@
+{
+  "countdown": {
+    "shortWordMax": 8,
+    "mediumWordMax": 25,
+    "shortSeconds": 3,
+    "mediumSeconds": 4,
+    "longSeconds": 5
+  },
+  "messages": {
+    "titleFormat": "Submitting ({key}) in {seconds}s",
+    "cancelHint": "press Esc to cancel"
+  },
+  "glass": {
+    "style": "regular",
+    "cornerRadius": 20,
+    "width": 360,
+    "height": 120,
+    "tintColorHex": null,
+    "fillColorHex": null
+  },
+  "whisper": { "root": "~/whisper.cpp", "model": "ggml-large-v3-turbo.bin" },
+  "server": { "enabled": true, "port": 8642, "warmUpAfterSeconds": 120 },
+  "submitKeys": {
+    "default": "enter",
+    "com.tinyspeck.slackmacgap": "cmd+enter"
+  },
+  "pinnedLanguages": ["ro", "en"],
+  "forcePrimaryLanguage": false,
+  "hotkey": { "key": "r", "modifiers": ["cmd", "opt", "ctrl"] },
+  "paste": { "requireUnchangedFocus": true },
+  "debug": { "overlayDiagnostics": false }
+}
