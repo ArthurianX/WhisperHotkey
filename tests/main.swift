@@ -66,6 +66,7 @@ try! """
   "server": { "enabled": false, "port": 9999, "warmUpAfterSeconds": 45 },
   "submitKeys": { "default": "enter", "com.tinyspeck.slackmacgap": "cmd+enter", "com.broken.app": "cmd+f13" },
   "messages": { "titleFormat": "Submitting ({key}) in {seconds}s" },
+  "text": { "maxSegmentChars": 120, "joinSegments": false },
   "whisper": { "root": "~/other-whisper", "model": "custom.bin" },
   "hotkey": { "key": "h", "modifiers": ["cmd", "shift"] },
   "paste": { "requireUnchangedFocus": false },
@@ -89,6 +90,8 @@ expect(cfg.hotKey().display == "⇧⌘H", "hotkey parsed from config")
 expect(cfg.requireUnchangedFocus == false, "paste.requireUnchangedFocus parsed")
 expect(cfg.overlayDiagnostics == true, "debug.overlayDiagnostics parsed")
 expect(cfg.forcePrimaryLanguage == true, "forcePrimaryLanguage parsed")
+expect(cfg.textMaxSegmentChars == 120, "text.maxSegmentChars parsed")
+expect(cfg.joinSegments == false, "text.joinSegments parsed")
 expect(cfg.invalidSubmitKeys.map { $0.app } == ["com.broken.app"], "invalid chord surfaced for reporting")
 expect(warnings(try! String(contentsOf: tmpConfig), "chord-warning").contains { $0.contains("cmd+f13") },
        "invalid submitKeys chord is reported when loaded")
@@ -103,6 +106,8 @@ expect(defaults.hotKey() == HotKey.default, "default hotkey is ⌃⌥⌘R")
 expect(defaults.requireUnchangedFocus == true, "default focus guard is on")
 expect(defaults.overlayDiagnostics == false, "default overlay diagnostics off")
 expect(defaults.whisperRootPath.hasSuffix("whisper.cpp"), "default whisper root")
+expect(defaults.textMaxSegmentChars == -1, "no segment cap by default — whisper-server's own default is a 60-char wrap")
+expect(defaults.joinSegments == true, "segments joined into one line by default: a segment break must not send a chat message early")
 expect(OverlayConfig.load(from: URL(fileURLWithPath: "/nonexistent.json")) { _ in }.invalidSubmitKeys.isEmpty,
        "defaults contain no invalid chords")
 
@@ -119,6 +124,13 @@ try! "[1, 2]".write(to: arrayURL, atomically: true, encoding: .utf8)
 var arrayWarnings: [String] = []
 _ = OverlayConfig.load(from: arrayURL) { arrayWarnings.append($0) }
 expect(arrayWarnings.contains { $0.contains("not a JSON object") }, "a JSON array is reported as unusable")
+
+let maxlenZeroURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whisper-test-maxlen-zero.json")
+try! "{ \"text\": { \"maxSegmentChars\": 0 } }".write(to: maxlenZeroURL, atomically: true, encoding: .utf8)
+var maxlenWarnings: [String] = []
+let maxlenCfg = OverlayConfig.load(from: maxlenZeroURL) { maxlenWarnings.append($0) }
+expect(maxlenCfg.textMaxSegmentChars == -1, "text.maxSegmentChars 0 is replaced with no cap")
+expect(maxlenWarnings.contains { $0.contains("60-character") }, "because whisper-server turns max_len 0 into its 60-character wrap")
 
 expect(warnings("{ \"hotkey\": { \"key\": \"r\", \"modifiers\": [\"fn\"] } }", "hotkey")
     .contains { $0.contains("⌃⌥⌘R") }, "unbindable hotkey is reported and falls back")
@@ -139,6 +151,7 @@ expect(roundTrip.serverPort == OverlayConfig().serverPort, "written defaults rou
 expect(roundTrip.hotKey() == OverlayConfig().hotKey(), "written defaults round-trip: hotkey")
 expect(roundTrip.titleFormat == OverlayConfig().titleFormat, "written defaults round-trip: title")
 expect(roundTrip.pinnedLanguages == [], "written defaults round-trip: pinnedLanguages")
+expect(roundTrip.textMaxSegmentChars == -1 && roundTrip.joinSegments == true, "written defaults round-trip: text keys")
 
 // --- OverlayConfig.pinnedLanguages ---
 let tmpPinnedConfig = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whisper-test-pinned-config.json")
@@ -182,6 +195,11 @@ expect(cleanTranscript("\n\nline one\n\nline two\n") == "line one\nline two", "b
 expect(cleanTranscript("one\n   two   \n") == "one\ntwo", "per-line whitespace trimmed")
 expect(cleanTranscript("") == "", "empty stays empty")
 expect(cleanTranscript(" \n \n") == "", "whitespace-only becomes empty")
+expect(cleanTranscript("Whenever I dictate, text gets\ninterrupted at some moments,\nlike you will see in this\nchat.\n", joinSegments: true)
+    == "Whenever I dictate, text gets interrupted at some moments, like you will see in this chat.",
+       "joining segments reflows whisper's segment lines into one line")
+expect(cleanTranscript("it\n's broken\n", joinSegments: true) == "it 's broken", "joined segments are separated by a space")
+expect(cleanTranscript("first\nsecond\n", joinSegments: false) == "first\nsecond", "joinSegments false keeps the segment lines")
 
 // --- shouldAutoPaste ---
 expect(shouldAutoPaste(startBundleID: "com.apple.TextEdit", currentBundleID: "com.apple.TextEdit"), "same app: paste")

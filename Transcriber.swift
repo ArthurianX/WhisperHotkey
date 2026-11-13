@@ -36,7 +36,12 @@ final class ServerTranscriber: Transcriber {
     init(server: WhisperServer) { self.server = server }
 
     func transcribe(wav: URL, config: OverlayConfig) -> String? {
-        server.transcribe(wav: wav, pinnedLanguages: config.pinnedLanguages, forcePrimary: config.forcePrimaryLanguage)
+        server.transcribe(
+            wav: wav,
+            pinnedLanguages: config.pinnedLanguages,
+            forcePrimary: config.forcePrimaryLanguage,
+            maxSegmentChars: config.textMaxSegmentChars
+        )
     }
 }
 
@@ -54,7 +59,10 @@ struct WhisperCLITranscriber: Transcriber {
         let process = Process()
         process.currentDirectoryURL = install.root
         process.executableURL = install.cliURL
-        process.arguments = [
+        // whisper-cli does not wrap segments unless asked (unlike whisper-server,
+        // which wraps at 60 characters by default), so these are only added when
+        // the user explicitly set a cap.
+        var arguments = [
             "-m", install.modelFile.path,
             "-f", wav.path,
             "-otxt",
@@ -63,6 +71,10 @@ struct WhisperCLITranscriber: Transcriber {
             "-np",
             "-l", CLILanguageSetting(pinned: config.pinnedLanguages, forcePrimary: config.forcePrimaryLanguage)
         ]
+        if config.textMaxSegmentChars > 0 {
+            arguments += ["-ml", "\(config.textMaxSegmentChars)", "-sow"]
+        }
+        process.arguments = arguments
 
         let logHandle = Self.openAppendHandle(for: logFile)
         process.standardOutput = logHandle

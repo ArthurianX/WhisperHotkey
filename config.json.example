@@ -26,6 +26,7 @@
   },
   "pinnedLanguages": ["ro", "en"],
   "forcePrimaryLanguage": false,
+  "text": { "maxSegmentChars": -1, "joinSegments": true },
   "hotkey": { "key": "r", "modifiers": ["cmd", "opt", "ctrl"] },
   "paste": { "requireUnchangedFocus": true },
   "debug": { "overlayDiagnostics": false }

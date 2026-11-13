@@ -252,7 +252,7 @@ final class WhisperController: NSObject, AVAudioRecorderDelegate {
                 return
             }
 
-            let cleaned = cleanTranscript(transcript)
+            let cleaned = cleanTranscript(transcript, joinSegments: config.joinSegments)
             DispatchQueue.main.async {
                 self.recordingOverlay.dismiss()
                 self.deliver(cleaned, config: config, dictationBundleID: dictationBundleID)

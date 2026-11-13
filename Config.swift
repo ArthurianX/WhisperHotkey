@@ -60,6 +60,12 @@ struct OverlayConfig {
     var pinnedLanguages: [String] = []
     // trade the two-pass auto-detect for one pass forced to pinnedLanguages[0]
     var forcePrimaryLanguage = false
+    // how whisper cuts the transcript into segments/lines
+    // -1 = no length cap (whisper-server's own default is a hard 60-char wrap)
+    var textMaxSegmentChars = -1
+    // join whisper's segments into one line before pasting; newline is "send" in
+    // many chat fields, so a segment break there submits the message early
+    var joinSegments = true
     // hold-to-dictate hotkey
     var hotKeyKey = "r"
     var hotKeyModifiers = ["cmd", "opt", "ctrl"]
@@ -170,6 +176,16 @@ struct OverlayConfig {
             config.pinnedLanguages = langs
         }
         if let v = json["forcePrimaryLanguage"] as? Bool { config.forcePrimaryLanguage = v }
+        if let t = json["text"] as? [String: Any] {
+            if let v = t["maxSegmentChars"] as? Int { config.textMaxSegmentChars = v }
+            if let v = t["joinSegments"] as? Bool { config.joinSegments = v }
+        }
+        if config.textMaxSegmentChars == 0 {
+            // whisper-server rewrites max_len 0 to its own 60-character wrap —
+            // the exact default that breaks words in half. Say so, and cap nothing.
+            warn("text.maxSegmentChars of 0 means whisper-server's 60-character wrap; using -1 (no cap) instead.")
+            config.textMaxSegmentChars = -1
+        }
         if let h = json["hotkey"] as? [String: Any] {
             if let v = h["key"] as? String { config.hotKeyKey = v }
             if let v = h["modifiers"] as? [String] { config.hotKeyModifiers = v }
@@ -226,6 +242,7 @@ struct OverlayConfig {
             "submitKeys": ["default": "enter"],
             "pinnedLanguages": [String](),
             "forcePrimaryLanguage": false,
+            "text": ["maxSegmentChars": defaults.textMaxSegmentChars, "joinSegments": defaults.joinSegments],
             "hotkey": ["key": defaults.hotKeyKey, "modifiers": defaults.hotKeyModifiers],
             "paste": ["requireUnchangedFocus": true],
             "debug": ["overlayDiagnostics": false],

@@ -73,6 +73,8 @@ menu-bar item — no restart needed.
 | `submitKeys` | Bundle id → chord (`enter`, `cmd+enter`, `shift+enter`…); `default` covers everything else |
 | `pinnedLanguages` | Two or more language codes (`["ro", "en"]`) to override whisper's global auto-detect |
 | `forcePrimaryLanguage` | Skip detection and force `pinnedLanguages[0]`: one pass instead of two |
+| `text.maxSegmentChars` | How long a whisper segment may get before it is cut. `-1` = no cap (whisper-server's own default is a 60-character wrap that can cut mid-word) |
+| `text.joinSegments` | Merge whisper's segment lines into one line before pasting. On by default: in chat fields a newline is the send key |
 | `hotkey.key/modifiers` | The hold-to-dictate binding, e.g. `{"key": "h", "modifiers": ["cmd", "shift"]}` |
 | `paste.requireUnchangedFocus` | Don't type into an app you switched to mid-dictation (text stays on the clipboard) |
 | `debug.overlayDiagnostics` | Verbose overlay-visibility logging |
@@ -156,6 +158,15 @@ Design docs and plans: `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 - **"Focus changed during transcription"** — you switched apps mid-dictation, so
   the app refused to type into the new frontmost window; use the clipboard, or
   set `paste.requireUnchangedFocus: false`.
+- **Line breaks or half-words in the pasted text** — this is whisper-server's
+  segmentation, not the model improvising: `server.cpp` maps `max_len 0` to a
+  hard 60-character wrap with `split_on_word false`, and emits one line per
+  segment, so a long sentence gets a newline every ~60 characters and can be cut
+  inside a word (`it` / `'s`). The app now sends `max_len=-1` and
+  `split_on_word=true` on every request, and joins the segments into one line
+  before pasting (`text.joinSegments`). Pauses still produce real segment
+  boundaries, which become spaces once joining is on; set
+  `text.joinSegments: false` when you dictate multi-line text.
 - **Wrong language** — set `pinnedLanguages`, and `forcePrimaryLanguage` if one
   language dominates.
 - **The overlay doesn't appear** — set `debug.overlayDiagnostics: true`,

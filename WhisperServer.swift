@@ -147,23 +147,23 @@ final class WhisperServer {
     /// Synchronous call to /inference. The language strategy comes from
     /// `languagePlan` — see docs/superpowers/specs/2026-07-29-language-pinning-design.md.
     /// Returns nil on any failure (caller falls back to whisper-cli).
-    func transcribe(wav: URL, pinnedLanguages: [String] = [], forcePrimary: Bool = false) -> String? {
+    func transcribe(wav: URL, pinnedLanguages: [String] = [], forcePrimary: Bool = false, maxSegmentChars: Int = -1) -> String? {
         switch languagePlan(pinned: pinnedLanguages, forcePrimary: forcePrimary) {
         case .autoDetect:
-            return performInference(wav: wav, language: "auto", verboseJSON: false)?.text
+            return performInference(wav: wav, language: "auto", verboseJSON: false, maxSegmentChars: maxSegmentChars)?.text
 
         case .forced(let primary):
-            return performInference(wav: wav, language: primary, verboseJSON: false)?.text
+            return performInference(wav: wav, language: primary, verboseJSON: false, maxSegmentChars: maxSegmentChars)?.text
 
         case .autoDetectWithPinning(let pinned):
-            guard let first = performInference(wav: wav, language: "auto", verboseJSON: true) else { return nil }
+            guard let first = performInference(wav: wav, language: "auto", verboseJSON: true, maxSegmentChars: maxSegmentChars) else { return nil }
             guard let probabilities = first.languageProbabilities,
                   let pinnedWinner = pickPinnedLanguage(probabilities: probabilities, pinned: pinned)
             else {
                 return first.text
             }
             log("Language pinning: global auto-detect disagreed with pinned set \(pinned); retrying forced to \(pinnedWinner).")
-            guard let retry = performInference(wav: wav, language: pinnedWinner, verboseJSON: false) else {
+            guard let retry = performInference(wav: wav, language: pinnedWinner, verboseJSON: false, maxSegmentChars: maxSegmentChars) else {
                 log("Language pinning retry failed; using original (possibly wrong-language) transcript.")
                 return first.text
             }
@@ -176,8 +176,20 @@ final class WhisperServer {
         let languageProbabilities: [String: Double]?
     }
 
+    /// Segment shape sent with every request.
+    ///
+    /// whisper-server's own defaults are wrong for dictation: `server.cpp` maps
+    /// `max_len 0` to a hard 60-character wrap with `split_on_word false`, so
+    /// every ~60 characters becomes a new segment — and segments are emitted one
+    /// per line. That is what puts a line break in the middle of a dictated
+    /// sentence and can cut a word in half (`it` / `'s`).
+    ///
+    /// `-1` means "no wrapping": `whisper_wrap_segment` only runs when
+    /// `max_len > 0`. `split_on_word` keeps breaks at word boundaries for users
+    /// who do ask for a length limit.
+    ///
     /// One synchronous multipart POST to /inference. Call from a background queue.
-    private func performInference(wav: URL, language: String, verboseJSON: Bool) -> InferenceResult? {
+    private func performInference(wav: URL, language: String, verboseJSON: Bool, maxSegmentChars: Int = -1) -> InferenceResult? {
         guard let audio = try? Data(contentsOf: wav),
               let url = URL(string: "http://127.0.0.1:\(port)/inference") else { return nil }
 
@@ -194,6 +206,8 @@ final class WhisperServer {
         appendField("response_format", verboseJSON ? "verbose_json" : "text")
         appendField("language", language)
         appendField("temperature", "0.0")
+        appendField("max_len", "\(maxSegmentChars)")
+        appendField("split_on_word", "true")
         body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
         body.append(audio)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
