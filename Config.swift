@@ -63,9 +63,10 @@ struct OverlayConfig {
     // how whisper cuts the transcript into segments/lines
     // -1 = no length cap (whisper-server's own default is a hard 60-char wrap)
     var textMaxSegmentChars = -1
-    // join whisper's segments into one line before pasting; newline is "send" in
-    // many chat fields, so a segment break there submits the message early
-    var joinSegments = true
+    // merge whisper's segment lines into one line before pasting. Off by
+    // default: pauses and sentence breaks are useful separation. Turn it on for
+    // chat fields, where a newline is the send key and a break submits early.
+    var joinSegments = false
     // hold-to-dictate hotkey
     var hotKeyKey = "r"
     var hotKeyModifiers = ["cmd", "opt", "ctrl"]

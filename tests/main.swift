@@ -107,7 +107,7 @@ expect(defaults.requireUnchangedFocus == true, "default focus guard is on")
 expect(defaults.overlayDiagnostics == false, "default overlay diagnostics off")
 expect(defaults.whisperRootPath.hasSuffix("whisper.cpp"), "default whisper root")
 expect(defaults.textMaxSegmentChars == -1, "no segment cap by default — whisper-server's own default is a 60-char wrap")
-expect(defaults.joinSegments == true, "segments joined into one line by default: a segment break must not send a chat message early")
+expect(defaults.joinSegments == false, "segment lines are kept by default — separation on pauses is wanted, arbitrary 60-char breaks are not")
 expect(OverlayConfig.load(from: URL(fileURLWithPath: "/nonexistent.json")) { _ in }.invalidSubmitKeys.isEmpty,
        "defaults contain no invalid chords")
 
@@ -151,7 +151,7 @@ expect(roundTrip.serverPort == OverlayConfig().serverPort, "written defaults rou
 expect(roundTrip.hotKey() == OverlayConfig().hotKey(), "written defaults round-trip: hotkey")
 expect(roundTrip.titleFormat == OverlayConfig().titleFormat, "written defaults round-trip: title")
 expect(roundTrip.pinnedLanguages == [], "written defaults round-trip: pinnedLanguages")
-expect(roundTrip.textMaxSegmentChars == -1 && roundTrip.joinSegments == true, "written defaults round-trip: text keys")
+expect(roundTrip.textMaxSegmentChars == -1 && roundTrip.joinSegments == false, "written defaults round-trip: text keys")
 
 // --- OverlayConfig.pinnedLanguages ---
 let tmpPinnedConfig = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whisper-test-pinned-config.json")
