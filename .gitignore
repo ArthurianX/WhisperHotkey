@@ -4,6 +4,16 @@ WhisperHotkey.app/
 .tokensave/
 config.json
 .codesign-setup/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.wav
+*.log
+.claude/
 
 # Serena: project.yml is versioned; the local overrides and the LSP cache are not.
 .serena/cache/

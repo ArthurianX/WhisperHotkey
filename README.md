@@ -50,6 +50,16 @@ so a stable identity keeps them across rebuilds; ad-hoc signing resets them
 every build. `setup.sh` creates the identity if it is missing; override with
 `WHISPER_HOTKEY_SIGNING_IDENTITY`.
 
+Signing keys stay in your macOS login Keychain. Setup creates owner-only
+temporary files for import and removes them on exit. Never commit signing keys,
+certificate bundles, personal settings, recordings, or logs. If upgrading an
+older checkout, remove its ignored `.codesign-setup/` directory after confirming
+your signing identity is in Keychain.
+
+Transcription and warm-up requests use only `127.0.0.1`; no API keys or cloud
+services are required. Setup needs internet access to download whisper.cpp and
+the model; dictation runs locally after installation.
+
 ## Settings
 
 Settings live in `~/.config/whisper-hotkey/config.json` (first run writes

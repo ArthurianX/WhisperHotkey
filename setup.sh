@@ -52,8 +52,10 @@ elif [[ -n "$WHISPER_HOTKEY_NO_CERT" ]]; then
   print "  ! No signing identity '$IDENTITY' (WHISPER_HOTKEY_NO_CERT is set); rebuilds keep losing TCC grants."
 else
   say "Creating the self-signed codesigning identity '$IDENTITY'"
-  SETUP_DIR="$DIR/.codesign-setup"
-  mkdir -p "$SETUP_DIR"
+  # Keep private signing material out of the checkout and remove it on exit.
+  umask 077
+  SETUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/whisper-hotkey-signing.XXXXXX")"
+  trap 'rm -rf -- "$SETUP_DIR"' EXIT
   openssl req -x509 -newkey rsa:2048 -keyout "$SETUP_DIR/key.pem" -out "$SETUP_DIR/cert.pem" \
     -days 3650 -nodes -subj "/CN=$IDENTITY" \
     -addext "keyUsage = critical, digitalSignature" \
